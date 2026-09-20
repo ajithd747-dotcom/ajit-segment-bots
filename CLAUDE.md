@@ -507,9 +507,14 @@ governor until those exist, and should be deleted when they do.
 
 ## Startup
 
-`~/.bash_aliases` defines a `claude` shell function that runs Claude Code from
-this directory regardless of where the shell was. To run it somewhere else for
-one invocation:
+**Since 2026-09-20 the `claude` shell function starts in `~/youtube-automation`,
+not here** (operator's instruction). To work in this project:
+
+    CLAUDE_START_DIR=~/ajit-segment-bots claude
+
+`~/.bash_aliases` defines the function; `CLAUDE_START_DIR` sets the directory
+(default `~/youtube-automation`). To run in the current directory for one
+invocation:
 
     CLAUDE_KEEP_CWD=1 claude
 
