@@ -163,6 +163,23 @@ def book_counters(health_messages) -> str:
     return f"paper-fill-simulator standing: {moved or 'every counter at zero'}."
 
 
+def orders_resting_on_the_book(health_messages) -> float:
+    """How many orders paper-fill-simulator says it is holding, from its own health.
+
+    The order reaching the bus is not the order being on the book: the latency
+    simulator holds every order for a simulated round trip before the book may
+    fill it, and an exit sent but still held cannot protect anything.
+    """
+    latest = None
+    for message in health_messages:
+        payload = message.payload
+        if getattr(payload, "part_id", None) == "paper-fill-simulator":
+            latest = payload
+    if latest is None:
+        return 0.0
+    return float(dict(getattr(latest, "standing", ()) or ()).get("orders_on_the_book", 0.0))
+
+
 def rise_within(trades: list) -> float:
     """How far the run rises above its own first trade, as a fraction of it.
 
@@ -470,8 +487,17 @@ def test_a_position_opens_and_closes_across_nine_processes(
 
         # Both exits must be resting before the market is allowed to move. Until
         # then the run keeps feeding the opening price, which no exit reacts to.
+        # "Resting" is the book's own word for it, read from its health: the two exit
+        # orders have crossed the bus once they are counted here, but the latency
+        # simulator still holds them, and a replay of about three seconds runs
+        # past the target inside that hold. Measured 2026-09-20 on the tape of
+        # 2026-09-16: the exits came to rest 0.4 seconds after the run had already
+        # gone through 171.35 against a target of 170.95, so nothing was resting to
+        # trigger and nothing closed.
         exits_placed_by = time.monotonic() + 60.0
-        while time.monotonic() < exits_placed_by and len(seen["order-request"]) < 3:
+        while time.monotonic() < exits_placed_by and not (
+            len(seen["order-request"]) >= 3 and orders_resting_on_the_book(seen["part-health"]) >= 2
+        ):
             calendar.publish("market-session-state", [session_now()])
             placer.publish("stop-target-plan", [plan])
             feed.publish("market-data", opening)

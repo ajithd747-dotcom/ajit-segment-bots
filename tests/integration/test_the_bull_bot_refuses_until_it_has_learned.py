@@ -98,6 +98,16 @@ TRADES_PER_SYMBOL = 6_000
 # market and correctly concluded nothing.
 REPLAY_BATCH = 12
 REPLAY_PAUSE_SECONDS = 0.02
+# The scanner's windows fill with wall time (256 observations at 4 Hz is 64
+# seconds), not with prints, so a replay shorter than that finds no cointegrated
+# pair and raises nothing -- whatever the market did. The design above sized the
+# replay at 120 seconds, "which fills every window with time to spare", but that
+# rested on 72,000 prints, and the prints a day actually holds are fewer: measured
+# 2026-09-20, the newest replayable day carried 16,740 across ten contracts, so at
+# the pace above it lasted 28 seconds and the price-level-sampler published 112
+# frames against a window of 256. So the run is stretched to the time it needs
+# rather than trusting the tape to be deep enough.
+MINIMUM_REPLAY_SECONDS = 120.0
 PATIENCE_SECONDS = 240.0
 
 
@@ -145,13 +155,19 @@ def bus_root():
 
 @pytest.fixture
 def isolated_settings(durable_tmp_path):
-    """The operator's settings, copied, with the learned state pointed at this run.
+    """The operator's settings, copied, with everything this run writes redirected.
 
     `bull-conviction-model` checkpoints what it has learned, and left alone this
     test writes its checkpoint over the operator's -- a model trained on a few
     seconds of replayed candidates replacing one trained on a running day, and
     the trade board reading the test's count as the bot's progress. That happened
     once, on 2026-08-23, which is why this fixture exists.
+
+    It redirected only `learned_state_root` until 2026-09-20. The scanner parts
+    checkpoint under `position_state_root` since 2026-08-25, so this test restored
+    the operator's own 3,751 price series and 32,850 pair verdicts on every start
+    and wrote its replay back over them, and its answer depended on what the
+    running system had last seen rather than on the tape it was given.
 
     Everything else is the operator's file byte for byte: the thresholds and the
     learning rates are what this test is meant to run against.
@@ -161,23 +177,28 @@ def isolated_settings(durable_tmp_path):
     settings_root = durable_tmp_path / "config" / "ajit-segment-bots" / "settings"
     shutil.copytree(settings_directory(), settings_root)
 
-    learned_root = durable_tmp_path / "learned"
-    learned_root.mkdir(parents=True, exist_ok=True)
+    redirected = {
+        "journal_path": durable_tmp_path / "journal.jsonl",
+        "learned_state_root": durable_tmp_path / "learned",
+        "position_state_root": durable_tmp_path / "positions",
+    }
+    (durable_tmp_path / "learned").mkdir(parents=True, exist_ok=True)
+    (durable_tmp_path / "positions").mkdir(parents=True, exist_ok=True)
+
     runtime_settings = settings_root / "runtime.toml"
     lines = runtime_settings.read_text().splitlines()
-    in_setting = False
-    rewritten = 0
+    inside = None
+    rewritten = {name: 0 for name in redirected}
     for index, line in enumerate(lines):
-        if line.strip() == "[learned_state_root]":
-            in_setting = True
-        elif line.startswith("["):
-            in_setting = False
-        elif in_setting and line.startswith("value"):
-            lines[index] = f'value = "{learned_root}"'
-            rewritten += 1
-    assert rewritten == 1, (
-        f"learned_state_root was rewritten {rewritten} times in the copied settings; this "
-        f"test must not be able to write over what the running bot has learned"
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            inside = stripped[1:-1]
+        elif inside in redirected and line.startswith("value"):
+            lines[index] = f'value = "{redirected[inside]}"'
+            rewritten[inside] += 1
+    assert all(count == 1 for count in rewritten.values()), (
+        f"{rewritten} -- this test must not be able to write into the operator's own ledger "
+        f"or over what the running bot has learned"
     )
     runtime_settings.write_text("\n".join(lines) + "\n")
     return settings_root
@@ -235,6 +256,8 @@ def replay_watching(
     be (RL-071).
     """
     restamp = arriving_now or (lambda batch: batch)
+    batches = max(1, -(-len(trades) // REPLAY_BATCH))
+    pause_seconds = max(REPLAY_PAUSE_SECONDS, MINIMUM_REPLAY_SECONDS / batches)
     seen = {data_type: [] for data_type in watched}
     feed = Publisher(
         part_id="venue-trade-stream-reader",
@@ -254,7 +277,7 @@ def replay_watching(
         while position < len(trades) and time.monotonic() < deadline:
             feed.publish("market-data", restamp(trades[position : position + REPLAY_BATCH]))
             position += REPLAY_BATCH
-            time.sleep(REPLAY_PAUSE_SECONDS)
+            time.sleep(pause_seconds)
             for data_type, inbox in watched.items():
                 seen[data_type].extend(inbox.drain())
             if stop_when():

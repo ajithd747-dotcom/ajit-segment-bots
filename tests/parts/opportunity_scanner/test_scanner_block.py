@@ -786,12 +786,23 @@ def test_on_real_nifty_the_gap_compares_a_year_with_a_year():
         pytest.skip("less than half an hour of NIFTY on today's tape")
     forecast = math.sqrt(squared / elapsed * horizon)
 
+    # Near the money means what the docstring says: an at-the-money option has a
+    # delta of about one half, whichever side of the market it sits. Taken over the
+    # whole session, because the forecast above is the whole session's. This used to
+    # be the last 200 readings of every strike on the expiry, which is not either of
+    # those: it was written while the day's tape was still growing (06:31 UTC, tape
+    # ran to 09:21), and the late readings of an expiring contract, where implied
+    # volatility climbs to 0.5 and above, moved the answer from 3.1 to 6.1 with no
+    # change to the code under test.
+    at_the_money_delta = (0.35, 0.65)
     implied = []
     for path in greeks_paths:
-        for record in read_tape_index(path)[-200:]:
-            value = _json.loads(read_payload(path.with_suffix(".blob"), record)).get("implied_volatility")
-            if value:
+        for record in read_tape_index(path):
+            reading = _json.loads(read_payload(path.with_suffix(".blob"), record))
+            value = reading.get("implied_volatility")
+            if value and at_the_money_delta[0] <= abs(reading.get("delta", 0.0)) <= at_the_money_delta[1]:
                 implied.append(value)
+    assert implied, "no near-the-money implied volatility on that day's tape"
     subject = VolatilityGapDetector(
         minimum_gap_fraction=0.29, horizon_seconds=float(horizon),
         seconds_per_year=TRADING_SECONDS_PER_YEAR, calibrator=calibrator(),
