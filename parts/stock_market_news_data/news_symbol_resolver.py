@@ -76,7 +76,7 @@ PART_ID = "news-symbol-resolver"
 
 PART_DECLARATION = PartDeclaration(
     part_id="news-symbol-resolver",
-    consumes=("broker-instrument-listing", "structured-news-item"),
+    consumes=("structured-news-item", "broker-instrument-listing"),
     produces=("news-symbol-tagging", "part-health"),
     resource_class="compute-bound",
     rate_risk="changes-the-answer",
