@@ -69,6 +69,10 @@ dependencies = [
     # failed rather than silently succeeded.
     "transformers==5.17.0",
     "tokenizers==0.23.2",
+    # Reads the sops-decrypted broker credentials (runtime/secrets_reader.py).
+    # Was imported but never declared, so a venv built from the lockfile could not
+    # import the secrets reader. 6.0.3 has a cp314 wheel with libyaml.
+    "pyyaml==6.0.3",
 ]
 
 [project.optional-dependencies]
